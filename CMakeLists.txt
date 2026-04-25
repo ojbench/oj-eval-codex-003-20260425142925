@@ -6,4 +6,4 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(code main.cpp)
-target_compile_options(code PRIVATE -O2 -pipe -static -s)
+target_compile_options(code PRIVATE -O3 -pipe -s)
