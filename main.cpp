@@ -16,8 +16,11 @@ struct ProblemState {
     int wrong_before_accept = 0; // X for +x display and penalty
     int wrong_total = 0; // total wrong attempts counted (excludes pending frozen ones)
 
-    // Current freeze window (only valid when frozen_active == true)
-    vector<Submission> frozen_subs; // submissions after current FREEZE for problems unsolved at FREEZE
+    // Aggregated data during current freeze window (valid when frozen_active == true)
+    int frozen_y = 0; // number of submissions after freezing
+    bool frozen_has_acc = false; // whether there is an AC among frozen submissions
+    int frozen_acc_time = -1; // time of first AC among frozen submissions
+    int frozen_wrong_before_acc = 0; // wrong attempts among frozen submissions before first AC
 };
 
 struct Team {
@@ -200,9 +203,17 @@ static inline void submit_update(const Submission& sub, int tid){
         // Update rank_set for this team if solved occurred
     } else {
         // Frozen active: only problems unsolved at freeze are affected
-        // If unsolved at freeze, submissions to it become frozen; capture in P.frozen_subs
-        // If it was solved before freeze, we would have P.solved == true; handled earlier
-        P.frozen_subs.push_back(sub);
+        // Aggregate counts for display and later unfreeze
+        P.frozen_y += 1;
+        if (!P.frozen_has_acc){
+            if (sub.status == ACC){
+                P.frozen_has_acc = true;
+                P.frozen_acc_time = sub.time;
+                // do not count this AC as wrong
+            } else {
+                P.frozen_wrong_before_acc += 1;
+            }
+        }
         // Do not change visible metrics yet
     }
 }
@@ -248,9 +259,9 @@ static inline void print_scoreboard(const vector<int>& order){
                 if (P.solved){
                     if (P.wrong_before_accept == 0) cout << '+';
                     else cout << '+' << P.wrong_before_accept;
-                } else if (!P.frozen_subs.empty()){
-                    int x = P.wrong_total; // wrongs before freeze (since wrong_total not updated during freeze)
-                    int y = (int)P.frozen_subs.size();
+                } else if (P.frozen_y > 0){
+                    int x = P.wrong_total; // wrongs before freeze
+                    int y = P.frozen_y;
                     if (x == 0) cout << "0/" << y;
                     else cout << '-' << x << '/' << y;
                 } else {
@@ -289,7 +300,7 @@ static inline void do_scroll(){
     auto has_frozen = [&](int tid)->bool{
         const Team &T = teams[tid];
         for (int p = 0; p < M; ++p){
-            if (!T.probs[p].solved && !T.probs[p].frozen_subs.empty()) return true;
+            if (!T.probs[p].solved && T.probs[p].frozen_y > 0) return true;
         }
         return false;
     };
@@ -304,7 +315,7 @@ static inline void do_scroll(){
         // find smallest problem index among frozen ones
         int sel = -1;
         for (int p = 0; p < M; ++p){
-            if (!T.probs[p].solved && !T.probs[p].frozen_subs.empty()) { sel = p; break; }
+            if (!T.probs[p].solved && T.probs[p].frozen_y > 0) { sel = p; break; }
         }
         if (sel == -1){
             // should not happen
@@ -323,33 +334,20 @@ static inline void do_scroll(){
         // Unfreeze selected problem
         ProblemState &P = T.probs[sel];
         bool changed_visible = false;
-        // Process frozen submissions in order
-        bool solved_now = false;
-        int wrong_before_accept_after = 0;
-        int accept_time = -1;
-        for (const auto &s : P.frozen_subs){
-            if (P.solved) break; // If became solved earlier in the same cycle (unlikely), but guard
-            if (s.status == ACC){
-                solved_now = true;
-                accept_time = s.time;
-                break;
-            } else {
-                wrong_before_accept_after++;
-            }
-        }
-        if (solved_now){
+        // Apply aggregated frozen effect
+        if (P.frozen_has_acc){
             P.solved = true;
-            P.accept_time = accept_time;
-            P.wrong_before_accept = P.wrong_total + wrong_before_accept_after;
+            P.accept_time = P.frozen_acc_time;
+            P.wrong_before_accept = P.wrong_total + P.frozen_wrong_before_acc;
             // Update visible metrics
             apply_accept_visible(T, P.accept_time, P.wrong_before_accept);
             changed_visible = true;
         } else {
             // No AC in frozen subs: all are wrong attempts
-            P.wrong_total += (int)P.frozen_subs.size();
+            P.wrong_total += P.frozen_y;
         }
-        // Clear frozen submissions for this problem
-        P.frozen_subs.clear();
+        // Clear frozen aggregated data for this problem
+        P.frozen_y = 0; P.frozen_has_acc = false; P.frozen_acc_time = -1; P.frozen_wrong_before_acc = 0;
 
         // Update local ranking position if changed
         if (changed_visible){
