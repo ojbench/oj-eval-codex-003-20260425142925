@@ -31,6 +31,16 @@ struct Team {
 
     // Helper: set of frozen problems (indices) that currently have frozen_subs not empty
     // We will track by checking frozen_subs.size() > 0
+    struct Last {
+        int problem = -1;
+        Status status = WA;
+        int time = -1;
+        bool has = false;
+    };
+    Last last_any;
+    array<Last,4> last_by_status{};
+    vector<Last> last_by_problem; // size M
+    vector<array<Last,4>> last_by_problem_status; // size M
 };
 
 int M = 0; // number of problems
@@ -84,7 +94,8 @@ struct RankCmp {
     }
 };
 
-// No global ranking maintenance; compute rankings on demand at FLUSH/SCROLL
+// Maintain global current ranking based on visible metrics
+static set<int, RankCmp> rank_set;
 
 static inline void insert_solve_time_desc(vector<int>& v, int t){
     // keep v sorted descending; size <= 26
@@ -124,7 +135,15 @@ static inline void start_comp(int dur, int m){
     for (auto &t : teams){
         t.probs.assign(M, ProblemState());
         t.solved_visible = 0; t.penalty_visible = 0; t.solve_times_visible_desc.clear();
+        t.last_any = Team::Last();
+        for (int i=0;i<4;++i) t.last_by_status[i] = Team::Last();
+        t.last_by_problem.assign(M, Team::Last());
+        t.last_by_problem_status.assign(M, {});
+        for (int p=0;p<M;++p){ for (int i=0;i<4;++i) t.last_by_problem_status[p][i] = Team::Last(); }
     }
+    // initialize ranking
+    rank_set.clear();
+    for (int i = 0; i < (int)teams.size(); ++i) rank_set.insert(i);
     cout << "[Info]Competition starts.\n";
 }
 
@@ -151,6 +170,15 @@ static inline void ensure_submission_storage(){
 static inline void submit_update(const Submission& sub, int tid){
     Team &T = teams[tid];
     ProblemState &P = T.probs[sub.problem];
+    // Update latest submission caches
+    T.last_any = {sub.problem, sub.status, sub.time, true};
+    T.last_by_status[sub.status] = {sub.problem, sub.status, sub.time, true};
+    if ((int)T.last_by_problem.size() == M){
+        T.last_by_problem[sub.problem] = {sub.problem, sub.status, sub.time, true};
+    }
+    if ((int)T.last_by_problem_status.size() == M){
+        T.last_by_problem_status[sub.problem][sub.status] = {sub.problem, sub.status, sub.time, true};
+    }
     // If already solved in final history, ignore for scoring; still record for query
     if (P.solved){
         return;
@@ -158,10 +186,13 @@ static inline void submit_update(const Submission& sub, int tid){
     if (!frozen_active){
         // Normal time
         if (sub.status == ACC){
+            // update ranking around metric change
+            auto it = rank_set.find(tid); if (it != rank_set.end()) rank_set.erase(it);
             P.solved = true;
             P.accept_time = sub.time;
             P.wrong_before_accept = P.wrong_total; // wrong_total counts wrongs so far
             apply_accept_visible(T, P.accept_time, P.wrong_before_accept);
+            rank_set.insert(tid);
         } else {
             // wrong attempt counts now
             P.wrong_total++;
@@ -177,10 +208,8 @@ static inline void submit_update(const Submission& sub, int tid){
 }
 
 static inline void do_flush(){
-    vector<int> ids(teams.size());
-    iota(ids.begin(), ids.end(), 0);
-    sort(ids.begin(), ids.end(), RankCmp());
-    last_flush_order = ids;
+    last_flush_order.clear(); last_flush_order.reserve(teams.size());
+    for (int tid : rank_set) last_flush_order.push_back(tid);
     has_flushed = true;
     cout << "[Info]Flush scoreboard.\n";
 }
@@ -242,9 +271,8 @@ static inline void do_scroll(){
         return;
     }
     cout << "[Info]Scroll scoreboard.\n";
-    // Build local ranking structure and print pre-scroll scoreboard
-    set<int, RankCmp> rank_set_local;
-    for (int i = 0; i < (int)teams.size(); ++i) rank_set_local.insert(i);
+    // Build local ranking structure from current global ranking and print pre-scroll scoreboard
+    set<int, RankCmp> rank_set_local = rank_set;
     {
         vector<int> pre_order; pre_order.reserve(teams.size());
         for (int tid : rank_set_local) pre_order.push_back(tid);
@@ -360,7 +388,8 @@ static inline void do_scroll(){
     for (int tid : rank_set_local) post_order.push_back(tid);
     print_scoreboard(post_order);
 
-    // Update last flush order to this latest order (as scroll implies a flush before, and after scroll the board is accurate)
+    // Update global ranking and last flush order to this latest order
+    rank_set = rank_set_local;
     last_flush_order = post_order;
     has_flushed = true;
 }
@@ -403,13 +432,23 @@ static inline void query_submission(const string& team_name, const string& prob_
     if (status_filter == "ALL") any_status = true;
     else want_s = parse_status(status_filter);
 
-    const auto &vec = team_submissions[tid];
     bool found = false; Submission last;
-    for (int i = (int)vec.size()-1; i >= 0; --i){
-        const Submission &s = vec[i];
-        if (want_p != -1 && s.problem != want_p) continue;
-        if (!any_status && s.status != want_s) continue;
-        last = s; found = true; break;
+    const Team &T = teams[tid];
+    if (want_p == -1 && any_status){
+        if (T.last_any.has){ last = {T.last_any.problem, T.last_any.status, T.last_any.time}; found = true; }
+    } else if (want_p == -1 && !any_status){
+        const auto &L = T.last_by_status[want_s];
+        if (L.has){ last = {L.problem, L.status, L.time}; found = true; }
+    } else if (want_p != -1 && any_status){
+        if (want_p < M && want_p >= 0){
+            const auto &L = T.last_by_problem[want_p];
+            if (L.has){ last = {L.problem, L.status, L.time}; found = true; }
+        }
+    } else {
+        if (want_p < M && want_p >= 0){
+            const auto &L = T.last_by_problem_status[want_p][want_s];
+            if (L.has){ last = {L.problem, L.status, L.time}; found = true; }
+        }
     }
     cout << "[Info]Complete query submission.\n";
     if (!found){
