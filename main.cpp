@@ -423,49 +423,32 @@ int main(){
     ios::sync_with_stdio(false);
     cin.tie(nullptr);
 
-    string line;
-    while (getline(cin, line)){
-        if (line.empty()) continue;
-        string cmd;
-        {
-            stringstream ss(line);
-            ss >> cmd;
-        }
+    string cmd;
+    while (cin >> cmd){
         if (cmd == "ADDTEAM"){
-            string name = line.substr(8); // after space
-            // trim
-            while (!name.empty() && isspace((unsigned char)name.front())) name.erase(name.begin());
-            while (!name.empty() && isspace((unsigned char)name.back())) name.pop_back();
+            string name; cin >> name;
             add_team(name);
         } else if (cmd == "START"){
-            // START DURATION [duration_time] PROBLEM [problem_count]
             string tmp; int dur, prob;
-            stringstream ss(line);
-            ss >> tmp; // START
-            ss >> tmp; // DURATION
-            ss >> dur;
-            ss >> tmp; // PROBLEM
-            ss >> prob;
+            cin >> tmp; // DURATION
+            cin >> dur;
+            cin >> tmp; // PROBLEM
+            cin >> prob;
             start_comp(dur, prob);
         } else if (cmd == "SUBMIT"){
-            // SUBMIT [problem_name] BY [team_name] WITH [submit_status] AT [time]
-            string tmp, team, status; char prob_char; int t;
-            stringstream ss(line);
-            ss >> tmp; // SUBMIT
-            ss >> prob_char; // problem
-            ss >> tmp; // BY
-            ss >> team; // team name (no spaces per spec)
-            ss >> tmp; // WITH
-            ss >> status;
-            ss >> tmp; // AT
-            ss >> t;
+            string prob_token, tmp, team, status; int t;
+            cin >> prob_token; // problem like "A"
+            cin >> tmp; // BY
+            cin >> team;
+            cin >> tmp; // WITH
+            cin >> status;
+            cin >> tmp; // AT
+            cin >> t;
 
             int tid = team_id[team];
             ensure_submission_storage();
-            Submission s{prob_char - 'A', parse_status(status), t};
+            Submission s{prob_token[0] - 'A', parse_status(status), t};
             team_submissions[tid].push_back(s);
-
-            // Apply to contest state (no global rank maintenance here)
             submit_update(s, tid);
         } else if (cmd == "FLUSH"){
             do_flush();
@@ -474,22 +457,15 @@ int main(){
         } else if (cmd == "SCROLL"){
             do_scroll();
         } else if (cmd == "QUERY_RANKING"){
-            string name = line.substr(14);
-            while (!name.empty() && isspace((unsigned char)name.front())) name.erase(name.begin());
-            while (!name.empty() && isspace((unsigned char)name.back())) name.pop_back();
+            string name; cin >> name;
             query_ranking(name);
         } else if (cmd == "QUERY_SUBMISSION"){
-            // QUERY_SUBMISSION [team_name] WHERE PROBLEM=[problem_name] AND STATUS=[status]
-            // We parse tokens
-            string tmp, team, where, problem_eq, and_s, status_eq;
-            stringstream ss(line);
-            ss >> tmp; // QUERY_SUBMISSION
-            ss >> team;
-            ss >> where; // WHERE
-            ss >> problem_eq; // PROBLEM=...
-            ss >> and_s; // AND
-            ss >> status_eq; // STATUS=...
-
+            string team, where, problem_eq, and_s, status_eq;
+            cin >> team;
+            cin >> where; // WHERE
+            cin >> problem_eq; // PROBLEM=...
+            cin >> and_s; // AND
+            cin >> status_eq; // STATUS=...
             string prob_filter = problem_eq.substr(problem_eq.find('=')+1);
             string status_filter = status_eq.substr(status_eq.find('=')+1);
             query_submission(team, prob_filter, status_filter);
@@ -497,7 +473,8 @@ int main(){
             cout << "[Info]Competition ends.\n";
             break;
         } else {
-            // ignore unknown
+            // Unknown token: consume rest of line to avoid infinite loop
+            string rest; getline(cin, rest);
         }
     }
     return 0;
