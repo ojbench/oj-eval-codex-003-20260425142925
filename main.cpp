@@ -84,8 +84,7 @@ struct RankCmp {
     }
 };
 
-// Global ranking set maintained over time
-static set<int, RankCmp> rank_set;
+// No global ranking maintenance; compute rankings on demand at FLUSH/SCROLL
 
 static inline void insert_solve_time_desc(vector<int>& v, int t){
     // keep v sorted descending; size <= 26
@@ -126,9 +125,6 @@ static inline void start_comp(int dur, int m){
         t.probs.assign(M, ProblemState());
         t.solved_visible = 0; t.penalty_visible = 0; t.solve_times_visible_desc.clear();
     }
-    // Initialize rank_set
-    rank_set.clear();
-    for (int i = 0; i < (int)teams.size(); ++i) rank_set.insert(i);
     cout << "[Info]Competition starts.\n";
 }
 
@@ -180,14 +176,12 @@ static inline void submit_update(const Submission& sub, int tid){
     }
 }
 
-static inline void do_flush(bool record_last_flush=true){
-    // ranking based on visible metrics; rank_set is up to date except we might need to reinsert teams whose metrics changed
-    // Here we just snapshot
-    if (record_last_flush){
-        last_flush_order.clear(); last_flush_order.reserve(teams.size());
-        for (int tid : rank_set) last_flush_order.push_back(tid);
-        has_flushed = true;
-    }
+static inline void do_flush(){
+    vector<int> ids(teams.size());
+    iota(ids.begin(), ids.end(), 0);
+    sort(ids.begin(), ids.end(), RankCmp());
+    last_flush_order = ids;
+    has_flushed = true;
     cout << "[Info]Flush scoreboard.\n";
 }
 
@@ -240,12 +234,7 @@ static inline void print_scoreboard(const vector<int>& order){
     }
 }
 
-static inline void recompute_rank_set_for_team(int tid){
-    // remove and reinsert to update ordering
-    auto it = rank_set.find(tid);
-    if (it != rank_set.end()) rank_set.erase(it);
-    rank_set.insert(tid);
-}
+// No global rank recomputation; we will use a local set in SCROLL
 
 static inline void do_scroll(){
     if (!frozen_active){
@@ -253,10 +242,14 @@ static inline void do_scroll(){
         return;
     }
     cout << "[Info]Scroll scoreboard.\n";
-    // Flush internally (no output of flush message per problem spec). But we need the order before scrolling.
-    vector<int> pre_order; pre_order.reserve(teams.size());
-    for (int tid : rank_set) pre_order.push_back(tid);
-    print_scoreboard(pre_order);
+    // Build local ranking structure and print pre-scroll scoreboard
+    set<int, RankCmp> rank_set_local;
+    for (int i = 0; i < (int)teams.size(); ++i) rank_set_local.insert(i);
+    {
+        vector<int> pre_order; pre_order.reserve(teams.size());
+        for (int tid : rank_set_local) pre_order.push_back(tid);
+        print_scoreboard(pre_order);
+    }
 
     // Build set of teams with frozen problems
     struct FrozenCmp {
@@ -272,7 +265,7 @@ static inline void do_scroll(){
         }
         return false;
     };
-    for (int tid : rank_set){
+    for (int tid : rank_set_local){
         if (has_frozen(tid)) with_frozen.insert(tid);
     }
 
@@ -294,9 +287,9 @@ static inline void do_scroll(){
         // Save neighbor below before change
         int neighbor_below_old = -1;
         {
-            auto it = rank_set.find(tid);
+            auto it = rank_set_local.find(tid);
             auto itn = it; ++itn;
-            if (itn != rank_set.end()) neighbor_below_old = *itn;
+            if (itn != rank_set_local.end()) neighbor_below_old = *itn;
         }
 
         // Unfreeze selected problem
@@ -330,21 +323,21 @@ static inline void do_scroll(){
         // Clear frozen submissions for this problem
         P.frozen_subs.clear();
 
-        // Update sets
-        // Update rank_set position
+        // Update local ranking position if changed
         if (changed_visible){
-            recompute_rank_set_for_team(tid);
+            auto it = rank_set_local.find(tid);
+            if (it != rank_set_local.end()) rank_set_local.erase(it);
+            rank_set_local.insert(tid);
         }
 
         // Determine ranking change event
         bool ranking_changed = false;
         int team2 = -1;
         {
-            auto it = rank_set.find(tid);
+            auto it = rank_set_local.find(tid);
             auto itn = it; ++itn; // neighbor below (lower ranked)
             int neighbor_below_new = -1;
-            if (itn != rank_set.end()) neighbor_below_new = *itn;
-            // Ranking changed if neighbor below changed
+            if (itn != rank_set_local.end()) neighbor_below_new = *itn;
             if (neighbor_below_new != neighbor_below_old) {
                 ranking_changed = true;
                 team2 = neighbor_below_new;
@@ -364,7 +357,7 @@ static inline void do_scroll(){
 
     // Print scoreboard after scrolling
     vector<int> post_order; post_order.reserve(teams.size());
-    for (int tid : rank_set) post_order.push_back(tid);
+    for (int tid : rank_set_local) post_order.push_back(tid);
     print_scoreboard(post_order);
 
     // Update last flush order to this latest order (as scroll implies a flush before, and after scroll the board is accurate)
@@ -472,13 +465,10 @@ int main(){
             Submission s{prob_char - 'A', parse_status(status), t};
             team_submissions[tid].push_back(s);
 
-            // Apply to contest state
-            // Remove from rank_set, update, reinsert if needed
-            auto it = rank_set.find(tid); if (it != rank_set.end()) rank_set.erase(it);
+            // Apply to contest state (no global rank maintenance here)
             submit_update(s, tid);
-            rank_set.insert(tid);
         } else if (cmd == "FLUSH"){
-            do_flush(true);
+            do_flush();
         } else if (cmd == "FREEZE"){
             do_freeze();
         } else if (cmd == "SCROLL"){
@@ -512,4 +502,3 @@ int main(){
     }
     return 0;
 }
-
